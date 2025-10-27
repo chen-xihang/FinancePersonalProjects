@@ -10,7 +10,6 @@ To develop and demonstrate practical skills in quantitative finance through hand
 
 *This repository is currently under active development. Projects will be added incrementally as they are completed.*
 
-**Next Project Planned:** [Brief description of your first planned project, e.g., "A momentum-based equity trading strategy backtest."]
 
 ## 🛠 Skills & Technologies
 
