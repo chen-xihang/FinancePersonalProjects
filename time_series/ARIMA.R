@@ -1,83 +1,70 @@
-### Using ARIMA to forecast commodity prices
 library(fpp3)
 library(quantmod)
 library(tidyverse)
 library(fabletools)
-library(tsibble)
-library(dplyr)
-library(imputeTS)
 
-# calling historical prices
+# Get data and aggregate to weekly to reduce noise
 getSymbols("BZ=F", src = "yahoo", from = "2008-01-01", to = Sys.Date())
 brent <- `BZ=F`[, "BZ=F.Close"]
 
+# Create weekly data to reduce noise and improve model performance
 brent_tsbl <- tibble(
   date = index(brent),
   price = as.numeric(brent)
 ) |>
   as_tsibble(index = date) |>
-  dplyr::filter(year(date)<=2022) |>
-  fill_gaps(date = seq.Date(min(date), max(date), by = "day")) |>
-  dplyr::mutate(price = na_interpolation(price, option = "linear"))
+  filter(year(date) <= 2022) |>
+  # Aggregate to weekly data
+  index_by(week = tsibble::yearweek(date)) |>
+  summarise(price = mean(price, na.rm = TRUE)) |>
+  as_tsibble(index = week) |>
+  fill_gaps() |>
+  mutate(price = na_interpolation(price, option = "linear"))
 
-test <- tibble(
+# Test data similarly aggregated
+test_data <- tibble(
   date = index(brent),
   price = as.numeric(brent)
 ) |>
-  dplyr::filter(year(date)>2022, year(date)<=2024) |>
-  bind_rows(
-    tibble(
-      date  = as.Date(c("2022-12-31", "2023-01-01","2023-01-02","2023-01-03")), # forward fill
-      price = c(84.33, 83.260, 82.26, 85.91)
-    )
-  ) |>
-  mutate(date = as.Date(date)) |>
-  arrange(date) |>
-  distinct(date, .keep_all = TRUE) |>
   as_tsibble(index = date) |>
-  fill_gaps(date = seq.Date(min(date), max(date), by = "day")) |>
-  dplyr::mutate(price = na_interpolation(price, option = "linear"))
+  filter(year(date) > 2022, year(date) <= 2024) |>
+  index_by(week = yearweek(date)) |>
+  summarise(price = mean(price, na.rm = TRUE)) |>
+  as_tsibble(index = week)
 
-brent_tsbl |> autoplot(price) + labs(title = "Brent Price Before 2022") 
+# Explore multiple ARIMA models
+fit_models <- brent_tsbl %>%
+  model(
+    auto_arima = ARIMA(price),                    # Fully automatic
+    arima_111 = ARIMA(price ~ pdq(1,1,1)),        # Common financial model
+    arima_210 = ARIMA(price ~ pdq(2,1,0)),        # AR(2) with differencing
+    arima_012 = ARIMA(price ~ pdq(0,1,2)),        # MA(2) with differencing
+    arima_212 = ARIMA(price ~ pdq(2,1,2)),        # ARMA(2,2) with differencing
+  )
 
-# testing stationarity
-brent_tsbl |> ACF(price) |> autoplot() #ACF 
-brent_tsbl |> features(price, unitroot_kpss)
+# Compare models
+fit_models %>% glance() %>% arrange(AICc)
 
-# one level difference
-d1_brent <- brent_tsbl %>%
-  mutate(price_diff = difference(price)) |>
-  dplyr::filter(!is.na(.data$price_diff))|>
-  as_tsibble()
+# Check the best model
+best_fit <- fit_models %>% select(auto_arima) #auto arima has min AICc
+report(best_fit)
 
-d1_brent |> autoplot(price_diff) + labs(title = "Price Difference Before 2022") 
-d1_brent |> ACF(price_diff) |> autoplot() + labs(title = "ACF of Price Difference Before 2022") 
-d1_brent |> features(price_diff, unitroot_kpss) # d = 1
+# Check residuals
+best_fit %>% gg_tsresiduals()
 
-# ARIMA with d = 1
-fit <- brent_tsbl %>%
-  model(arima_fixed_d = ARIMA(price ~ pdq(d = 1)))
-
-brent_tsbl %>% 
-  model(arima = ARIMA(price)) # gives the same ARIMA model, minimises AICc
-
-fit %>% gg_tsresiduals() # plotting residues
-
-fit %>%
+# Plot fitted values
+best_fit %>%
   augment() %>%
-  autoplot(.fitted, colour = "green") +   # predicted (fitted) = black
-  autolayer(brent_tsbl, price, colour = "blue") +  # actual = red
+  autoplot(.fitted, color = "red") +
+  autolayer(brent_tsbl, price, color = "blue") +
   labs(title = "ARIMA Fitted vs Actual (Training Set)",
        y = "Price", x = "Time")
 
-# checking with test data set
-fit_2y <- fit |> forecast(h = "2 years")
-fit_2y_test <- fit |> forecast(new_data = test)
+# Generate forecast
+forecast_result <- best_fit %>% forecast(h = 104)  # 2 years of weeks
 
-autoplot(fit_2y, brent_tsbl) +
-  labs(title = "ARIMA Forecast: 2 Years Ahead",
-       y = "Price", x = "Time")
-
-autoplot(fit_2y_test, brent_tsbl) +
-  labs(title = "ARIMA Forecast: 2 Years Ahead",
+# Plot forecast with test data for comparison
+autoplot(forecast_result, brent_tsbl) +
+  autolayer(test_data, price, color = "darkgreen") +
+  labs(title = "ARIMA Forecast vs Actual Test Data",
        y = "Price", x = "Time")
